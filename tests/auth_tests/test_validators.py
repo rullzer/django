@@ -1,11 +1,14 @@
 import os
+import urllib.error
 
+import django.core.exceptions
 from django.contrib.auth import validators
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import (
     CommonPasswordValidator,
     MinimumLengthValidator,
     NumericPasswordValidator,
+    NotCompromisedPasswordValidator,
     UserAttributeSimilarityValidator,
     get_default_password_validators,
     get_password_validators,
@@ -19,6 +22,7 @@ from django.db import models
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import isolate_apps
 from django.utils.html import conditional_escape
+from unittest.mock import Mock, patch
 
 
 @override_settings(
@@ -253,6 +257,53 @@ class NumericPasswordValidatorTest(SimpleTestCase):
         self.assertEqual(
             NumericPasswordValidator().get_help_text(),
             "Your password can’t be entirely numeric.",
+        )
+
+
+class NotCompromisedPasswordValidatorTest(SimpleTestCase):
+
+    @patch("django.contrib.auth.password_validation.urlopen")
+    def test_validate_request_error(self, urlopen_mock):
+        urlopen_mock.side_effect = urllib.error.URLError("whoops")
+
+        self.assertIsNone(NotCompromisedPasswordValidator().validate("password123"))
+
+        urlopen_mock.assert_called_once()
+
+    @patch("django.contrib.auth.password_validation.urlopen")
+    def test_validate_valid_resp_breached(self, urlopen_mock):
+        resp = Mock()
+        resp.readlines.return_value = [
+            b'0038C44766B155CD6C1A1D951D5D8EDE7B5:15\r\n',
+            b'00EB317EC906FE6D38DFA99B930EEBE0820:1\r\n',
+            b'C6008F9CAB4083784CBD1874F76618D2A97:42\r\n',
+            b'01E3F37F54CCA138656189EC0479FA8042B:0\r\n',
+        ]
+        urlopen_mock.return_value = resp
+
+        self.assertRaises(django.core.exceptions.ValidationError, NotCompromisedPasswordValidator().validate, "password123")
+
+        urlopen_mock.assert_called_once()
+
+    @patch("django.contrib.auth.password_validation.urlopen")
+    def test_validate_valid_resp_not_breached(self, urlopen_mock):
+        resp = Mock()
+        resp.readlines.return_value = [
+            b'0038C44766B155CD6C1A1D951D5D8EDE7B5:15\r\n',
+            b'00EB317EC906FE6D38DFA99B930EEBE0820:1\r\n',
+            b'C6008F9CAB4083784CBD1874F76618D2A98:42\r\n',
+            b'01E3F37F54CCA138656189EC0479FA8042B:0\r\n',
+        ]
+        urlopen_mock.return_value  = resp
+
+        self.assertIsNone(NotCompromisedPasswordValidator().validate("password123"))
+
+        urlopen_mock.assert_called_once()
+
+    def test_help_text(self):
+        self.assertEqual(
+            NotCompromisedPasswordValidator().get_help_text(),
+            "Your password can't appear in a known breach.",
         )
 
 

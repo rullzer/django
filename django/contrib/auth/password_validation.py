@@ -2,7 +2,10 @@ import functools
 import gzip
 import re
 from difflib import SequenceMatcher
+from hashlib import sha1
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.core.exceptions import (
@@ -264,3 +267,48 @@ class NumericPasswordValidator:
 
     def get_help_text(self):
         return _("Your password can’t be entirely numeric.")
+
+
+class NotCompromisedPasswordValidator:
+    """
+    Validate that the password does not appear in a known breach.
+    Using the service from haveibeenpwned.com
+    """
+
+    def validate(self, password, user=None):
+        password_hash = sha1(password.encode()).hexdigest().upper()
+        hash_prefix = password_hash[0:5]
+        hash_suffix = password_hash[5:]
+
+        req = Request(
+            f'https://api.pwnedpasswords.com/range/{hash_prefix}',
+            headers={
+                'Add-Padding': 'true',
+                'User-Agent': 'Django password validator',
+            },
+            method='GET'
+        )
+
+        # Timeout is set to 1 second. However, the API usually responds a lot faster
+        try:
+            resp = urlopen(req, timeout=1)
+        except URLError:
+            # If there is an error we just assume that the validator passes
+            return
+
+        for line in resp.readlines():
+            parts = line.strip().decode().split(':')
+
+            if len(parts) != 2:
+                # If we do not have 2 parts let ignore this line
+                continue
+
+            if parts[0] == hash_suffix and parts[1].isdigit and int(parts[1]) > 0:
+                # We found a match!
+                raise ValidationError(
+                    _("This password appears in a known breach."),
+                    code="password_in_breach",
+                )
+
+    def get_help_text(self):
+        return _("Your password can't appear in a known breach.")
